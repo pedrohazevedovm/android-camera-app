@@ -66,7 +66,7 @@ class HttpServer(
     /**
      * Handles GET /capture:
      * Blocks until the Camera2 pipeline produces a manual frame and hardware metadata.
-     * Injects all 19 hardware metadata parameters into the 'X-Camera-Metadata' header.
+     * Injects all 22 hardware metadata parameters into the 'X-Camera-Metadata' header.
      * Optionally returns a JSON bundle with Base64 image if ?format=json is passed.
      */
     private fun handleCaptureRequest(session: IHTTPSession): Response {

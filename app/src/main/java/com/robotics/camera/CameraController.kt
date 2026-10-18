@@ -429,19 +429,29 @@ class CameraController(
     }
 
     /**
-     * Extracts all 19 hardware metadata parameters from TotalCaptureResult and CaptureRequest.
+     * Extracts all 22 hardware metadata parameters from TotalCaptureResult and CaptureRequest.
+     *
+     * @param result The frame-synchronized TotalCaptureResult produced by the Camera2 HAL.
+     * @param request The originating CaptureRequest for the still frame.
+     * @return JSONObject containing the 22 hardware metadata keys with deterministic fallbacks.
      */
     private fun extractMetadata(result: TotalCaptureResult, request: CaptureRequest): JSONObject {
         return JSONObject().apply {
-            // 1. Exposure and Sensitivity
+            // 1. Exposure, Sensitivity, and Rolling Shutter Timing
             put("sensor_exposure_time", result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: currentSettings.exposureTimeNs)
             put("sensor_sensitivity", result.get(CaptureResult.SENSOR_SENSITIVITY) ?: currentSettings.iso)
             put("sensor_timestamp", result.get(CaptureResult.SENSOR_TIMESTAMP) ?: System.nanoTime())
+            put("sensor_rolling_shutter_skew", result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L)
 
-            // 2. Lens and Optics
+            // 2. Lens, Physical State, and Intrinsic Calibration
             put("lens_focus_distance", (result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: currentSettings.focusDistance).toDouble())
             put("lens_focal_length", (result.get(CaptureResult.LENS_FOCAL_LENGTH) ?: 0.0f).toDouble())
             put("lens_aperture", (result.get(CaptureResult.LENS_APERTURE) ?: 0.0f).toDouble())
+            put("lens_state", result.get(CaptureResult.LENS_STATE) ?: CaptureResult.LENS_STATE_STATIONARY)
+
+            val intrinsics = result.get(CaptureResult.LENS_INTRINSIC_CALIBRATION)
+                ?: characteristics?.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+            put("lens_intrinsic_calibration", buildIntrinsicCalibrationArray(intrinsics))
 
             // 3. 3A Control Modes
             put("control_ae_mode", result.get(CaptureResult.CONTROL_AE_MODE) ?: CaptureResult.CONTROL_AE_MODE_OFF)
@@ -501,16 +511,23 @@ class CameraController(
     }
 
     /**
-     * Fallback metadata generator if TotalCaptureResult is unavailable.
+     * Builds a deterministic fallback metadata JSONObject when TotalCaptureResult is unavailable.
+     *
+     * @param request The originating CaptureRequest for the still frame.
+     * @return JSONObject with the exact same 22 keys as extractMetadata.
      */
     private fun buildFallbackMetadata(request: CaptureRequest): JSONObject {
+        val fallbackIntrinsics = characteristics?.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
         return JSONObject().apply {
             put("sensor_exposure_time", currentSettings.exposureTimeNs)
             put("sensor_sensitivity", currentSettings.iso)
             put("sensor_timestamp", System.nanoTime())
+            put("sensor_rolling_shutter_skew", 0L)
             put("lens_focus_distance", currentSettings.focusDistance.toDouble())
             put("lens_focal_length", 0.0)
             put("lens_aperture", 0.0)
+            put("lens_state", CaptureResult.LENS_STATE_STATIONARY)
+            put("lens_intrinsic_calibration", buildIntrinsicCalibrationArray(fallbackIntrinsics))
             put("control_ae_mode", CaptureResult.CONTROL_AE_MODE_OFF)
             put("control_af_mode", CaptureResult.CONTROL_AF_MODE_OFF)
             put("control_awb_mode", CaptureResult.CONTROL_AWB_MODE_OFF)
@@ -535,6 +552,28 @@ class CameraController(
             })
             put("jpeg_quality", request.get(CaptureRequest.JPEG_QUALITY)?.toInt() ?: 100)
         }
+    }
+
+    /**
+     * Converts a 5-element Camera2 intrinsic calibration FloatArray [fx, fy, cx, cy, s]
+     * into a finite JSONArray, sanitizing NaN or missing values.
+     *
+     * @param rawIntrinsics Optional 5-element FloatArray from CaptureResult or CameraCharacteristics.
+     * @return A 5-element JSONArray of finite doubles, defaulting to [0.0, 0.0, 0.0, 0.0, 0.0].
+     */
+    private fun buildIntrinsicCalibrationArray(rawIntrinsics: FloatArray?): JSONArray {
+        val array = JSONArray()
+        if (rawIntrinsics != null && rawIntrinsics.size >= 5) {
+            for (i in 0 until 5) {
+                val value = rawIntrinsics[i]
+                array.put(if (value.isFinite()) value.toDouble() else 0.0)
+            }
+        } else {
+            for (i in 0 until 5) {
+                array.put(0.0)
+            }
+        }
+        return array
     }
 
     // ---------------------------------------------------------------------------------------------

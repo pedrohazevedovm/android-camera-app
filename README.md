@@ -49,13 +49,16 @@ Triggers an immediate frame capture from the active sensor stream and returns th
 - **Response**: `200 OK`, `Content-Type: image/jpeg`
 - **Response Headers**:
   - `Cache-Control: no-cache, no-store, must-revalidate`
-  - `X-Camera-Metadata`: Compact JSON string containing all **19 frame-synchronized hardware metadata keys** from `TotalCaptureResult`:
+  - `X-Camera-Metadata`: Compact JSON string containing all **22 frame-synchronized hardware metadata keys** from `TotalCaptureResult`:
     - `sensor_exposure_time` (ns)
     - `sensor_sensitivity` (ISO)
     - `sensor_timestamp` (hardware monotonic ns)
+    - `sensor_rolling_shutter_skew` (ns duration from first row to last row readout)
     - `lens_focus_distance` (diopters)
     - `lens_focal_length` (mm)
     - `lens_aperture` (f-number)
+    - `lens_state` (`0` = `STATIONARY`, `1` = `MOVING`)
+    - `lens_intrinsic_calibration` (`[fx, fy, cx, cy, s]` in active-array pixels)
     - `control_ae_mode`, `control_af_mode`, `control_awb_mode`
     - `color_correction_mode`
     - `color_correction_gains` (`{"red", "green_even", "green_odd", "blue"}`)
@@ -124,13 +127,15 @@ curl -X POST http://<DEVICE_IP>:8080/config \
 ---
 
 ### 3. `GET /status`
+
 Returns live telemetry, hardware information, and session capture statistics.
 
 - **Method**: `GET`
 - **Path**: `/status`
 - **Response**: `200 OK`, `Content-Type: application/json`
 
-#### Response:
+#### Response
+
 ```json
 {
   "status": "online",
