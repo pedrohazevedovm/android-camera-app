@@ -87,27 +87,41 @@ curl -s http://<DEVICE_IP>:8080/capture?format=json -o frame_bundle.json
 ---
 
 ### 2. `POST /config`
-Dynamically updates the manual camera parameters on the fly without closing the capture session.
+Dynamically updates the camera parameters on the fly without closing the capture session. Supports switching between strict deterministic `"manual"` mode and standard Android `"auto"` mode (3A + ISP filters), as well as toggling Optical (`ois_enabled`) and Electronic (`eis_enabled`) stabilization for comparative experiments.
 
 - **Method**: `POST`
 - **Path**: `/config`
 - **Content-Type**: `application/json`
 
-#### Request Body:
+#### Request Body (Manual Mode):
 ```json
 {
+  "control_mode": "manual",
   "focus_distance": 2.5,
   "iso": 200,
-  "exposure_time_ns": 10000000
+  "exposure_time_ns": 10000000,
+  "ois_enabled": false,
+  "eis_enabled": false
 }
 ```
-*Note: `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`.*
+*Note: `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`. When `"control_mode": "auto"` is sent without explicit `ois_enabled`/`eis_enabled`, both default to `true` (if supported by the device hardware).*
 
 #### cURL:
 ```bash
+# Strict Manual Mode (deterministic IBVS baseline)
 curl -X POST http://<DEVICE_IP>:8080/config \
      -H "Content-Type: application/json" \
-     -d '{"focus_distance": 2.5, "iso": 200, "exposure_time_ns": 10000000}'
+     -d '{"control_mode": "manual", "focus_distance": 2.5, "iso": 200, "exposure_time_ns": 10000000}'
+
+# Default Android Camera Auto Mode (3A + OIS/EIS + ISP post-processing)
+curl -X POST http://<DEVICE_IP>:8080/config \
+     -H "Content-Type: application/json" \
+     -d '{"control_mode": "auto"}'
+
+# Ablative Test: Manual 3A with OIS enabled
+curl -X POST http://<DEVICE_IP>:8080/config \
+     -H "Content-Type: application/json" \
+     -d '{"control_mode": "manual", "ois_enabled": true, "eis_enabled": false}'
 ```
 
 #### Response:
@@ -116,10 +130,14 @@ curl -X POST http://<DEVICE_IP>:8080/config \
   "status": "success",
   "message": "Camera parameters updated",
   "applied_settings": {
+    "control_mode": "manual",
+    "auto_mode": false,
     "focus_distance": 2.5,
     "iso": 200,
     "exposure_time_ns": 10000000,
-    "exposure_time_ms": 10.0
+    "exposure_time_ms": 10.0,
+    "ois_enabled": false,
+    "eis_enabled": false
   }
 }
 ```
@@ -143,10 +161,14 @@ Returns live telemetry, hardware information, and session capture statistics.
   "android_version": "14",
   "captures_served": 184,
   "current_settings": {
+    "control_mode": "manual",
+    "auto_mode": false,
     "focus_distance": 2.5,
     "iso": 200,
     "exposure_time_ns": 10000000,
-    "exposure_time_ms": 10.0
+    "exposure_time_ms": 10.0,
+    "ois_enabled": false,
+    "eis_enabled": false
   }
 }
 ```

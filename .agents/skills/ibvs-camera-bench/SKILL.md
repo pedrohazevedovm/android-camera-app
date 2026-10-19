@@ -16,6 +16,10 @@ Use this skill when compiling, deploying, configuring, or verifying the `Cam-App
    ```powershell
    ./gradlew assembleDebug
    ```
+   *Note (Windows / OneDrive File Lock)*: If `:app:mergeDebugResources` fails with `Unable to delete directory ... mergeDebugResources`, stop the Gradle/AAPT2 daemons and remove `app/build` before rebuilding:
+   ```powershell
+   .\gradlew.bat --stop; Remove-Item -Recurse -Force .\app\build -ErrorAction SilentlyContinue; .\gradlew.bat assembleDebug
+   ```
 2. Verify that the target Android device is connected via ADB:
    ```powershell
    adb devices

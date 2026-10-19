@@ -146,9 +146,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateCameraSettingsDisplay(settings: CameraSettings) {
-        val expMs = String.format("%.2f", settings.exposureTimeNs / 1_000_000.0)
-        val focusD = String.format("%.2f", settings.focusDistance)
-        tvCameraInfo.text = "ISO: ${settings.iso} | Exp: ${expMs} ms | Focus: ${focusD} D"
+        val modeLabel = if (settings.autoMode) "AUTO (3A)" else "MANUAL"
+        val oisLabel = if (settings.oisEnabled) "ON" else "OFF"
+        val eisLabel = if (settings.eisEnabled) "ON" else "OFF"
+        if (settings.autoMode) {
+            tvCameraInfo.text = "Mode: $modeLabel | OIS: $oisLabel | EIS: $eisLabel"
+        } else {
+            val expMs = String.format("%.2f", settings.exposureTimeNs / 1_000_000.0)
+            val focusD = String.format("%.2f", settings.focusDistance)
+            tvCameraInfo.text = "Mode: $modeLabel | ISO: ${settings.iso} | Exp: ${expMs} ms | Focus: ${focusD} D | OIS: $oisLabel | EIS: $eisLabel"
+        }
     }
 
     override fun onDestroy() {
