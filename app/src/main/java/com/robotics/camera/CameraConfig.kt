@@ -12,9 +12,9 @@ import org.json.JSONObject
  *               Used when [autoMode] is false.
  * @property exposureTimeNs Exposure duration in nanoseconds (e.g., 10_000_000L = 10ms).
  *                          Used when [autoMode] is false.
- * @property autoMode When true, enables standard Android Camera2 3A routines (AF, AE, AWB)
+ * @property autoMode When true (default), enables standard Android Camera2 3A routines (AF, AE, AWB)
  *                    and ISP post-processing to emulate the default Android camera behavior.
- *                    When false (default), enforces strict manual hardware determinism.
+ *                    When false, enforces strict manual hardware determinism.
  * @property oisEnabled When true, requests Optical Image Stabilization (LENS_OPTICAL_STABILIZATION_MODE_ON).
  * @property eisEnabled When true, requests Electronic Image Stabilization (CONTROL_VIDEO_STABILIZATION_MODE_ON).
  */
@@ -22,9 +22,9 @@ data class CameraSettings(
     val focusDistance: Float = 0.0f,
     val iso: Int = 100,
     val exposureTimeNs: Long = 10_000_000L,
-    val autoMode: Boolean = false,
-    val oisEnabled: Boolean = false,
-    val eisEnabled: Boolean = false
+    val autoMode: Boolean = true,
+    val oisEnabled: Boolean = true,
+    val eisEnabled: Boolean = true
 ) {
     /**
      * Serializes the camera settings into a JSONObject for HTTP responses.

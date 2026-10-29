@@ -12,7 +12,7 @@ The application turns an Android smartphone or single-board computer into a dete
 - **Zero Image Post-Processing**: Disables optical image stabilization (OIS), electronic stabilization (EIS), spatial/temporal noise reduction, edge sharpening, and chromatic aberration correction for unadulterated sensor output.
 - **Embedded HTTP Server**: Runs [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) (`2.3.1`) directly on the device on port `8080`.
 - **Low-Latency Image Pipeline**: Uses a dedicated `ImageReader` configured for `ImageFormat.JPEG` at 1080p (1920x1080) with blocking thread synchronization.
-- **Runtime Reconfiguration**: Dynamically adjust focus distance, ISO sensitivity, and exposure time on the live capture session via `POST /config`.
+- **Runtime Reconfiguration**: Starts in `"auto"` mode (3A + OIS/EIS) by default and supports dynamically switching to `"manual"` mode (focus distance, ISO sensitivity, exposure time, OIS/EIS) on the live capture session via `POST /config`.
 - **Robot Arm Mounting & Headless Operation**: Enforces `FLAG_KEEP_SCREEN_ON` and holds a `PowerManager.PARTIAL_WAKE_LOCK` to prevent device sleep during long data collection runs.
 - **On-Screen Telemetry HUD**: Displays local IP address, port, live sensor parameters (ISO, exposure ms, focus diopters), and total captures served.
 
@@ -133,7 +133,7 @@ Dynamically updates the camera parameters on the fly without closing the capture
   "eis_enabled": false
 }
 ```
-*Note: `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`. When `"control_mode": "auto"` is sent without explicit `ois_enabled`/`eis_enabled`, both default to `true` (if supported by the device hardware).*
+*Note: The app starts in `"auto"` mode by default (`"auto_mode": true`, `"ois_enabled": true`, `"eis_enabled": true`). `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`. When `"control_mode": "auto"` is sent without explicit `ois_enabled`/`eis_enabled`, both default to `true` (if supported by the device hardware).*
 
 #### cURL:
 ```bash

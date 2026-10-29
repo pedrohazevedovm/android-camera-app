@@ -75,12 +75,15 @@ class CameraController(
     private var preCorrectionActiveArray: Rect? = null
     private var imageReaderSize: Size = Size(TARGET_WIDTH, TARGET_HEIGHT)
 
-    // Active Manual Settings
+    // Active Camera Settings (starts in Auto mode by default)
     @Volatile
     var currentSettings = CameraSettings(
         focusDistance = 0.0f,          // Default: Infinity focus (0 diopters)
         iso = 100,                     // Default: Clean baseline sensitivity
-        exposureTimeNs = 10_000_000L   // Default: 10 ms (1/100 sec)
+        exposureTimeNs = 10_000_000L,  // Default: 10 ms (1/100 sec)
+        autoMode = true,               // Default: Start in Auto mode (3A + ISP)
+        oisEnabled = true,             // Default: Enable OIS in Auto mode if supported
+        eisEnabled = true              // Default: Enable EIS in Auto mode if supported
     )
         private set
 
@@ -758,6 +761,9 @@ class CameraController(
             }
         }
         return array
+    }
+
+    /**
      * Converts Camera2 intrinsic calibration coordinates into the JPEG output coordinates.
      * Camera2 reports [fx, fy, cx, cy, skew] in the active-array coordinate system.
      */
