@@ -71,6 +71,9 @@ class CameraController(
     private var exposureRange: Range<Long>? = null
     private var isoRange: Range<Int>? = null
     private var minFocusDistance: Float = 0.0f // In diopters (1/meters). 0.0 = infinity.
+    private var lensIntrinsicCalibration: FloatArray? = null
+    private var preCorrectionActiveArray: Rect? = null
+    private var imageReaderSize: Size = Size(TARGET_WIDTH, TARGET_HEIGHT)
 
     // Active Manual Settings
     @Volatile
@@ -140,8 +143,18 @@ class CameraController(
             isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
             exposureRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             minFocusDistance = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0.0f
+            lensIntrinsicCalibration = chars.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+            preCorrectionActiveArray =
+                chars.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
 
-            Log.i(TAG, "Camera $cameraId selected. ISO Range: $isoRange, Exposure Range: $exposureRange, Max Focus Diopter: $minFocusDistance")
+            Log.i(
+                TAG,
+                "Camera $cameraId selected. ISO Range: $isoRange, " +
+                    "Exposure Range: $exposureRange, " +
+                    "Max Focus Diopter: $minFocusDistance, " +
+                    "Lens Intrinsic Calibration: " +
+                    (lensIntrinsicCalibration?.contentToString() ?: "unavailable")
+            )
 
             // Clamp initial settings to hardware limits
             currentSettings = clampSettings(currentSettings)
@@ -194,6 +207,7 @@ class CameraController(
             ?: Size(TARGET_WIDTH, TARGET_HEIGHT)
 
         Log.i(TAG, "Configured ImageReader for JPEG resolution: ${selectedSize.width}x${selectedSize.height}")
+        imageReaderSize = selectedSize
 
         // MaxImages = 2 to avoid buffering lag and keep memory bounded
         imageReader = ImageReader.newInstance(
@@ -442,6 +456,12 @@ class CameraController(
             put("lens_focus_distance", (result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: currentSettings.focusDistance).toDouble())
             put("lens_focal_length", (result.get(CaptureResult.LENS_FOCAL_LENGTH) ?: 0.0f).toDouble())
             put("lens_aperture", (result.get(CaptureResult.LENS_APERTURE) ?: 0.0f).toDouble())
+            put("lens_intrinsic_calibration", JSONArray().apply {
+                lensIntrinsicCalibration?.forEach { put(it.toDouble()) }
+            })
+            put("camera_matrix_k", buildCameraMatrixK(result.get(CaptureResult.SCALER_CROP_REGION)))
+            put("camera_matrix_width", imageReaderSize.width)
+            put("camera_matrix_height", imageReaderSize.height)
 
             // 3. 3A Control Modes
             put("control_ae_mode", result.get(CaptureResult.CONTROL_AE_MODE) ?: CaptureResult.CONTROL_AE_MODE_OFF)
@@ -511,6 +531,12 @@ class CameraController(
             put("lens_focus_distance", currentSettings.focusDistance.toDouble())
             put("lens_focal_length", 0.0)
             put("lens_aperture", 0.0)
+            put("lens_intrinsic_calibration", JSONArray().apply {
+                lensIntrinsicCalibration?.forEach { put(it.toDouble()) }
+            })
+            put("camera_matrix_k", buildCameraMatrixK(null))
+            put("camera_matrix_width", imageReaderSize.width)
+            put("camera_matrix_height", imageReaderSize.height)
             put("control_ae_mode", CaptureResult.CONTROL_AE_MODE_OFF)
             put("control_af_mode", CaptureResult.CONTROL_AF_MODE_OFF)
             put("control_awb_mode", CaptureResult.CONTROL_AWB_MODE_OFF)
@@ -534,6 +560,41 @@ class CameraController(
                 put("bottom", 0)
             })
             put("jpeg_quality", request.get(CaptureRequest.JPEG_QUALITY)?.toInt() ?: 100)
+        }
+    }
+
+    /**
+     * Converts Camera2 intrinsic calibration coordinates into the JPEG output coordinates.
+     * Camera2 reports [fx, fy, cx, cy, skew] in the active-array coordinate system.
+     */
+    private fun buildCameraMatrixK(cropRegion: Rect?): JSONArray {
+        val calibration = lensIntrinsicCalibration
+        val activeArray = preCorrectionActiveArray
+        if (calibration == null || calibration.size < 4 || activeArray == null) {
+            return JSONArray()
+        }
+
+        val crop = cropRegion ?: activeArray
+        if (crop.width() <= 0 || crop.height() <= 0) {
+            return JSONArray()
+        }
+
+        val scaleX = imageReaderSize.width.toDouble() / crop.width().toDouble()
+        val scaleY = imageReaderSize.height.toDouble() / crop.height().toDouble()
+        val fx = calibration[0].toDouble() * scaleX
+        val fy = calibration[1].toDouble() * scaleY
+        val cx = (calibration[2].toDouble() - crop.left) * scaleX
+        val cy = (calibration[3].toDouble() - crop.top) * scaleY
+        return JSONArray().apply {
+            put(fx)
+            put(0.0)
+            put(cx)
+            put(0.0)
+            put(fy)
+            put(cy)
+            put(0.0)
+            put(0.0)
+            put(1.0)
         }
     }
 

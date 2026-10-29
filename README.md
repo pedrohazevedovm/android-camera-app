@@ -49,12 +49,15 @@ Triggers an immediate frame capture from the active sensor stream and returns th
 - **Response**: `200 OK`, `Content-Type: image/jpeg`
 - **Response Headers**:
   - `Cache-Control: no-cache, no-store, must-revalidate`
-  - `X-Camera-Metadata`: Compact JSON string containing all **19 frame-synchronized hardware metadata keys** from `TotalCaptureResult`:
+  - `X-Camera-Metadata`: Compact JSON string containing the frame-synchronized hardware metadata keys from `TotalCaptureResult`:
     - `sensor_exposure_time` (ns)
     - `sensor_sensitivity` (ISO)
     - `sensor_timestamp` (hardware monotonic ns)
     - `lens_focus_distance` (diopters)
     - `lens_focal_length` (mm)
+    - `lens_intrinsic_calibration` (`[fx, fy, cx, cy, skew]`, when provided by the HAL)
+    - `camera_matrix_k` (9 values in ROS row-major order, scaled to the JPEG output)
+    - `camera_matrix_width`, `camera_matrix_height`
     - `lens_aperture` (f-number)
     - `control_ae_mode`, `control_af_mode`, `control_awb_mode`
     - `color_correction_mode`
@@ -80,6 +83,32 @@ curl -s -I http://<DEVICE_IP>:8080/capture | grep -i x-camera-metadata
 # Capture JSON bundle with Base64 image
 curl -s http://<DEVICE_IP>:8080/capture?format=json -o frame_bundle.json
 ```
+
+### ROS 2 CameraInfo bridge
+
+The app exposes `camera_matrix_k` in the capture metadata. To publish it as
+`sensor_msgs/msg/CameraInfo`, build the `ros2_camera_info_bridge` package in a
+ROS 2 workspace:
+
+```bash
+cd ~/ros2_ws/src
+cp -r /path/to/android-camera-app/ros2_camera_info_bridge .
+cd ~/ros2_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --packages-select ros2_camera_info_bridge
+source install/setup.bash
+ros2 run ros2_camera_info_bridge android_camera_info \
+  --ros-args -p android_url:=http://<DEVICE_IP>:8080
+```
+
+The node publishes `/camera/camera_info` with `CameraInfo.k` containing:
+
+```text
+[fx, 0, cx, 0, fy, cy, 0, 0, 1]
+```
+
+ROS `CameraInfo.K` does not represent skew. Any Android-reported skew remains
+available only in `lens_intrinsic_calibration` and is not copied into `K`.
 
 ---
 
