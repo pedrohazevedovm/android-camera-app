@@ -253,18 +253,15 @@ class CameraController(
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
-                        // Create repeating preview request with full manual control
                         val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                             addTarget(pSurface)
-                            applyStrictManualSettings(this, currentSettings)
+                            applyCameraSettings(this, currentSettings, isStillCapture = false)
                         }
                         previewRequestBuilder = builder
 
-                        // Start continuous sensor stream
                         session.setRepeatingRequest(builder.build(), null, backgroundHandler)
-                        Log.i(TAG, "Repeating preview request started with manual 3A controls disabled.")
+                        Log.i(TAG, "Repeating preview request started (autoMode=${currentSettings.autoMode}).")
 
-                        // Notify UI of initial settings
                         onSettingsChangedListener?.invoke(currentSettings)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start camera preview", e)
@@ -282,45 +279,48 @@ class CameraController(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // CRITICAL: STRICT MANUAL CAMERA2 CONFIGURATION
+    // CAMERA2 HARDWARE CONFIGURATION (MANUAL DETERMINISTIC VS. STANDARD ANDROID AUTO)
     // ---------------------------------------------------------------------------------------------
 
     /**
+     * Routes the CaptureRequest configuration to either strict manual mode or standard Android auto mode.
+     *
+     * @param builder Target CaptureRequest.Builder to configure.
+     * @param settings Desired CameraSettings to apply.
+     * @param isStillCapture True when configuring a still JPEG capture; false for repeating preview.
+     */
+    private fun applyCameraSettings(
+        builder: CaptureRequest.Builder,
+        settings: CameraSettings,
+        isStillCapture: Boolean
+    ) {
+        if (settings.autoMode) {
+            applyStandardAutoSettings(builder, settings, isStillCapture)
+        } else {
+            applyStrictManualSettings(builder, settings)
+        }
+    }
+
+    /**
      * Configures the CaptureRequest.Builder with absolute manual hardware parameters,
-     * disabling all automated 3A loops, post-processing, and sensor stabilization.
+     * disabling automated 3A loops and post-processing while applying explicit OIS/EIS toggles.
+     *
+     * @param builder Target CaptureRequest.Builder to configure.
+     * @param settings Active manual CameraSettings.
      */
     private fun applyStrictManualSettings(builder: CaptureRequest.Builder, settings: CameraSettings) {
-
-        // 1. MASTER CONTROL MODE:
-        // Set CONTROL_MODE to OFF. This tells the camera HAL that application-level manual controls
-        // take complete priority and automated scene modes or 3A algorithms must not intervene.
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_OFF)
 
-        // 2. AUTO-FOCUS (AF) CONTROL:
-        // Disable the auto-focus algorithm completely. The lens actuator remains strictly stationary
-        // at the configured focal distance (in diopters: 1 / meters).
         builder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
         builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, settings.focusDistance)
 
-        // 3. AUTO-EXPOSURE (AE) CONTROL:
-        // Disable the auto-exposure loop. The integration time (shutter speed) and analog/digital
-        // sensor amplification (sensitivity/ISO) are fixed to exact values.
         builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, settings.exposureTimeNs)
         builder.set(CaptureRequest.SENSOR_SENSITIVITY, settings.iso)
 
-        // 4. AUTO-WHITE BALANCE (AWB) CONTROL:
-        // Disable dynamic white balance calculations to prevent color shifting between frames.
         builder.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-
-        // 4b. MANUAL COLOR CORRECTION GAINS & TRANSFORM MATRIX:
-        // When CONTROL_AWB_MODE is OFF, the ISP requires explicit RGB gains and color transform.
-        // Without this, many OEM camera HALs render completely green, purple, or dark frames.
-        // We set COLOR_CORRECTION_MODE to TRANSFORM_MATRIX with calibrated daylight gains (D65 baseline).
         builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
-        // Standard D65 neutral channel gains: Red = 1.8f, Even Green = 1.0f, Odd Green = 1.0f, Blue = 1.6f
         builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(1.8f, 1.0f, 1.0f, 1.6f))
-        // Identity color space matrix (no chromatic shearing)
         builder.set(
             CaptureRequest.COLOR_CORRECTION_TRANSFORM,
             ColorSpaceTransform(
@@ -332,26 +332,185 @@ class CameraController(
             )
         )
 
-        // 5. STABILIZATION:
-        // Disable Optical Image Stabilization (OIS) to prevent physical voice-coil lens movements
-        // caused by robotic arm vibrations or accelerations.
-        builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
-        // Disable Electronic/Video Stabilization (EIS) to avoid geometric warping/cropping across frames.
-        builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+        applyStabilizationSettings(builder, settings)
 
-        // 6. ZERO IMAGE POST-PROCESSING:
-        // Turn off temporal and spatial noise reduction filters. Raw sensor noise pattern is preserved.
         builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
-        // Turn off edge enhancement / sharpening filters to ensure pixel-level linear fidelity.
         builder.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
-        // Disable chromatic aberration correction algorithms.
         builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)
-
-        // 7. ADDITIONAL DETERMINISM CONTROLS:
-        // Disable hot-pixel removal filters if supported
         builder.set(CaptureRequest.HOT_PIXEL_MODE, CameraMetadata.HOT_PIXEL_MODE_OFF)
-        // Disable lens shading compensation (vignette correction) to preserve raw illumination gradients
         builder.set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF)
+    }
+
+    /**
+     * Configures the CaptureRequest.Builder to emulate the default Android camera behavior,
+     * enabling automated 3A algorithms (continuous AF, AE, AWB) and ISP post-processing filters.
+     *
+     * @param builder Target CaptureRequest.Builder to configure.
+     * @param settings Active CameraSettings containing stabilization flags.
+     * @param isStillCapture True when configuring a still capture (prefers HIGH_QUALITY ISP filters);
+     *                       false for preview (prefers FAST ISP filters).
+     */
+    private fun applyStandardAutoSettings(
+        builder: CaptureRequest.Builder,
+        settings: CameraSettings,
+        isStillCapture: Boolean
+    ) {
+        val chars = characteristics
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+
+        val afMode = selectSupportedMode(
+            chars?.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES),
+            intArrayOf(
+                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+                CameraMetadata.CONTROL_AF_MODE_AUTO
+            ),
+            CameraMetadata.CONTROL_AF_MODE_OFF
+        )
+        builder.set(CaptureRequest.CONTROL_AF_MODE, afMode)
+
+        val aeMode = selectSupportedMode(
+            chars?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES),
+            intArrayOf(CameraMetadata.CONTROL_AE_MODE_ON),
+            CameraMetadata.CONTROL_AE_MODE_OFF
+        )
+        builder.set(CaptureRequest.CONTROL_AE_MODE, aeMode)
+
+        val awbMode = selectSupportedMode(
+            chars?.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES),
+            intArrayOf(CameraMetadata.CONTROL_AWB_MODE_AUTO),
+            CameraMetadata.CONTROL_AWB_MODE_OFF
+        )
+        builder.set(CaptureRequest.CONTROL_AWB_MODE, awbMode)
+
+        val colorMode = if (isStillCapture) {
+            CameraMetadata.COLOR_CORRECTION_MODE_HIGH_QUALITY
+        } else {
+            CameraMetadata.COLOR_CORRECTION_MODE_FAST
+        }
+        builder.set(CaptureRequest.COLOR_CORRECTION_MODE, colorMode)
+
+        applyStabilizationSettings(builder, settings)
+
+        val preferredQualityOrder = if (isStillCapture) {
+            intArrayOf(
+                CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY,
+                CameraMetadata.NOISE_REDUCTION_MODE_FAST
+            )
+        } else {
+            intArrayOf(CameraMetadata.NOISE_REDUCTION_MODE_FAST)
+        }
+
+        builder.set(
+            CaptureRequest.NOISE_REDUCTION_MODE,
+            selectSupportedMode(
+                chars?.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES),
+                preferredQualityOrder,
+                CameraMetadata.NOISE_REDUCTION_MODE_OFF
+            )
+        )
+
+        val preferredEdgeOrder = if (isStillCapture) {
+            intArrayOf(CameraMetadata.EDGE_MODE_HIGH_QUALITY, CameraMetadata.EDGE_MODE_FAST)
+        } else {
+            intArrayOf(CameraMetadata.EDGE_MODE_FAST)
+        }
+        builder.set(
+            CaptureRequest.EDGE_MODE,
+            selectSupportedMode(
+                chars?.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES),
+                preferredEdgeOrder,
+                CameraMetadata.EDGE_MODE_OFF
+            )
+        )
+
+        val preferredAberrationOrder = if (isStillCapture) {
+            intArrayOf(
+                CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY,
+                CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_FAST
+            )
+        } else {
+            intArrayOf(CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_FAST)
+        }
+        builder.set(
+            CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+            selectSupportedMode(
+                chars?.get(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES),
+                preferredAberrationOrder,
+                CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF
+            )
+        )
+
+        val preferredHotPixelOrder = if (isStillCapture) {
+            intArrayOf(CameraMetadata.HOT_PIXEL_MODE_HIGH_QUALITY, CameraMetadata.HOT_PIXEL_MODE_FAST)
+        } else {
+            intArrayOf(CameraMetadata.HOT_PIXEL_MODE_FAST)
+        }
+        builder.set(
+            CaptureRequest.HOT_PIXEL_MODE,
+            selectSupportedMode(
+                chars?.get(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES),
+                preferredHotPixelOrder,
+                CameraMetadata.HOT_PIXEL_MODE_OFF
+            )
+        )
+
+        val preferredShadingOrder = if (isStillCapture) {
+            intArrayOf(CameraMetadata.SHADING_MODE_HIGH_QUALITY, CameraMetadata.SHADING_MODE_FAST)
+        } else {
+            intArrayOf(CameraMetadata.SHADING_MODE_FAST)
+        }
+        builder.set(
+            CaptureRequest.SHADING_MODE,
+            selectSupportedMode(
+                chars?.get(CameraCharacteristics.SHADING_AVAILABLE_MODES),
+                preferredShadingOrder,
+                CameraMetadata.SHADING_MODE_OFF
+            )
+        )
+    }
+
+    /**
+     * Applies Optical (OIS) and Electronic (EIS) stabilization settings to the CaptureRequest.Builder.
+     *
+     * @param builder Target CaptureRequest.Builder to configure.
+     * @param settings Clamped CameraSettings containing validated OIS and EIS flags.
+     */
+    private fun applyStabilizationSettings(builder: CaptureRequest.Builder, settings: CameraSettings) {
+        val oisMode = if (settings.oisEnabled && isOisSupported()) {
+            CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
+        } else {
+            CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+        }
+        builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, oisMode)
+
+        val eisMode = if (settings.eisEnabled && isEisSupported()) {
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+        } else {
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        }
+        builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, eisMode)
+    }
+
+    /**
+     * Selects the first preferred Camera2 mode constant that is supported by the hardware.
+     *
+     * @param availableModes Array of supported mode integers from CameraCharacteristics.
+     * @param preferredModes Ordered array of desired mode constants.
+     * @param fallback Safe fallback mode constant if none of the preferred modes are supported.
+     * @return The selected mode integer.
+     */
+    private fun selectSupportedMode(
+        availableModes: IntArray?,
+        preferredModes: IntArray,
+        fallback: Int
+    ): Int {
+        if (availableModes == null) return fallback
+        for (preferred in preferredModes) {
+            if (availableModes.contains(preferred)) {
+                return preferred
+            }
+        }
+        return fallback
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -365,7 +524,8 @@ class CameraController(
      *
      * @param timeoutMs Maximum milliseconds to wait for the frame and metadata.
      * @return CapturedFrame containing the raw JPEG ByteArray and full hardware metadata JSONObject.
-     * @throws TimeoutException or IllegalStateException on capture failure.
+     * @throws java.util.concurrent.TimeoutException If the capture exceeds timeoutMs.
+     * @throws IllegalStateException If the camera session, device, or ImageReader is inactive.
      */
     fun captureStillFrame(timeoutMs: Long = 3000): CapturedFrame {
         val session = captureSession ?: throw IllegalStateException("Camera capture session is not active")
@@ -380,10 +540,10 @@ class CameraController(
             pendingCaptureLatch.set(latch)
 
             try {
-                // Build single capture request using STILL_CAPTURE template with manual overrides
+                // Build single capture request using STILL_CAPTURE template with active mode settings
                 val stillBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(reader.surface)
-                    applyStrictManualSettings(this, currentSettings)
+                    applyCameraSettings(this, currentSettings, isStillCapture = true)
                     // High-quality JPEG output
                     set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
@@ -443,21 +603,30 @@ class CameraController(
     }
 
     /**
-     * Extracts all 19 hardware metadata parameters from TotalCaptureResult and CaptureRequest.
+     * Extracts all 22 hardware metadata parameters from TotalCaptureResult and CaptureRequest.
+     *
+     * @param result The frame-synchronized TotalCaptureResult produced by the Camera2 HAL.
+     * @param request The originating CaptureRequest for the still frame.
+     * @return JSONObject containing the 22 hardware metadata keys with deterministic fallbacks.
      */
     private fun extractMetadata(result: TotalCaptureResult, request: CaptureRequest): JSONObject {
         return JSONObject().apply {
-            // 1. Exposure and Sensitivity
+            // 1. Exposure, Sensitivity, and Rolling Shutter Timing
             put("sensor_exposure_time", result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: currentSettings.exposureTimeNs)
             put("sensor_sensitivity", result.get(CaptureResult.SENSOR_SENSITIVITY) ?: currentSettings.iso)
             put("sensor_timestamp", result.get(CaptureResult.SENSOR_TIMESTAMP) ?: System.nanoTime())
+            put("sensor_rolling_shutter_skew", result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L)
 
-            // 2. Lens and Optics
+            // 2. Lens, Physical State, and Intrinsic Calibration
             put("lens_focus_distance", (result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: currentSettings.focusDistance).toDouble())
             put("lens_focal_length", (result.get(CaptureResult.LENS_FOCAL_LENGTH) ?: 0.0f).toDouble())
             put("lens_aperture", (result.get(CaptureResult.LENS_APERTURE) ?: 0.0f).toDouble())
+            put("lens_state", result.get(CaptureResult.LENS_STATE) ?: CaptureResult.LENS_STATE_STATIONARY)
+
+            val intrinsics = result.get(CaptureResult.LENS_INTRINSIC_CALIBRATION)
+                ?: characteristics?.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
             put("lens_intrinsic_calibration", JSONArray().apply {
-                lensIntrinsicCalibration?.forEach { put(it.toDouble()) }
+                intrinsics?.forEach { put(it.toDouble()) }
             })
             put("camera_matrix_k", buildCameraMatrixK(result.get(CaptureResult.SCALER_CROP_REGION)))
             put("camera_matrix_width", imageReaderSize.width)
@@ -521,18 +690,24 @@ class CameraController(
     }
 
     /**
-     * Fallback metadata generator if TotalCaptureResult is unavailable.
+     * Builds a deterministic fallback metadata JSONObject when TotalCaptureResult is unavailable.
+     *
+     * @param request The originating CaptureRequest for the still frame.
+     * @return JSONObject with the exact same 22 keys as extractMetadata.
      */
     private fun buildFallbackMetadata(request: CaptureRequest): JSONObject {
+        val fallbackIntrinsics = characteristics?.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
         return JSONObject().apply {
             put("sensor_exposure_time", currentSettings.exposureTimeNs)
             put("sensor_sensitivity", currentSettings.iso)
             put("sensor_timestamp", System.nanoTime())
+            put("sensor_rolling_shutter_skew", 0L)
             put("lens_focus_distance", currentSettings.focusDistance.toDouble())
             put("lens_focal_length", 0.0)
             put("lens_aperture", 0.0)
+            put("lens_state", CaptureResult.LENS_STATE_STATIONARY)
             put("lens_intrinsic_calibration", JSONArray().apply {
-                lensIntrinsicCalibration?.forEach { put(it.toDouble()) }
+                (fallbackIntrinsics ?: lensIntrinsicCalibration)?.forEach { put(it.toDouble()) }
             })
             put("camera_matrix_k", buildCameraMatrixK(null))
             put("camera_matrix_width", imageReaderSize.width)
@@ -564,6 +739,25 @@ class CameraController(
     }
 
     /**
+     * Converts a 5-element Camera2 intrinsic calibration FloatArray [fx, fy, cx, cy, s]
+     * into a finite JSONArray, sanitizing NaN or missing values.
+     *
+     * @param rawIntrinsics Optional 5-element FloatArray from CaptureResult or CameraCharacteristics.
+     * @return A 5-element JSONArray of finite doubles, defaulting to [0.0, 0.0, 0.0, 0.0, 0.0].
+     */
+    private fun buildIntrinsicCalibrationArray(rawIntrinsics: FloatArray?): JSONArray {
+        val array = JSONArray()
+        if (rawIntrinsics != null && rawIntrinsics.size >= 5) {
+            for (i in 0 until 5) {
+                val value = rawIntrinsics[i]
+                array.put(if (value.isFinite()) value.toDouble() else 0.0)
+            }
+        } else {
+            for (i in 0 until 5) {
+                array.put(0.0)
+            }
+        }
+        return array
      * Converts Camera2 intrinsic calibration coordinates into the JPEG output coordinates.
      * Camera2 reports [fx, fy, cx, cy, skew] in the active-array coordinate system.
      */
@@ -603,8 +797,11 @@ class CameraController(
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Dynamically updates the manual camera parameters (focus, ISO, exposure time)
+     * Dynamically updates the camera parameters (manual/auto mode, focus, ISO, exposure, OIS, EIS)
      * on the active repeating preview stream and subsequent captures.
+     *
+     * @param newSettings Desired CameraSettings to clamp and apply.
+     * @return The hardware-clamped CameraSettings actually applied to the session.
      */
     fun updateManualSettings(newSettings: CameraSettings): CameraSettings {
         val clamped = clampSettings(newSettings)
@@ -614,9 +811,15 @@ class CameraController(
         val builder = previewRequestBuilder
         if (session != null && builder != null) {
             try {
-                applyStrictManualSettings(builder, clamped)
+                applyCameraSettings(builder, clamped, isStillCapture = false)
                 session.setRepeatingRequest(builder.build(), null, backgroundHandler)
-                Log.i(TAG, "Dynamically updated manual parameters: Focus=${clamped.focusDistance}D, ISO=${clamped.iso}, Exp=${clamped.exposureTimeNs / 1_000_000.0}ms")
+                Log.i(
+                    TAG,
+                    "Dynamically updated camera settings: Mode=${if (clamped.autoMode) "AUTO" else "MANUAL"}, " +
+                        "Focus=${clamped.focusDistance}D, ISO=${clamped.iso}, " +
+                        "Exp=${clamped.exposureTimeNs / 1_000_000.0}ms, " +
+                        "OIS=${clamped.oisEnabled}, EIS=${clamped.eisEnabled}"
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to apply dynamic configuration update", e)
             }
@@ -626,6 +829,12 @@ class CameraController(
         return clamped
     }
 
+    /**
+     * Clamps numeric sensor parameters to physical hardware ranges and validates OIS/EIS support.
+     *
+     * @param settings Unvalidated CameraSettings input.
+     * @return Clamped and capability-validated CameraSettings.
+     */
     private fun clampSettings(settings: CameraSettings): CameraSettings {
         val clampedIso = isoRange?.clamp(settings.iso) ?: settings.iso
         val clampedExp = exposureRange?.clamp(settings.exposureTimeNs) ?: settings.exposureTimeNs
@@ -634,12 +843,37 @@ class CameraController(
         } else {
             settings.focusDistance.coerceAtLeast(0.0f)
         }
+        val validatedOis = settings.oisEnabled && isOisSupported()
+        val validatedEis = settings.eisEnabled && isEisSupported()
 
         return CameraSettings(
             focusDistance = clampedFocus,
             iso = clampedIso,
-            exposureTimeNs = clampedExp
+            exposureTimeNs = clampedExp,
+            autoMode = settings.autoMode,
+            oisEnabled = validatedOis,
+            eisEnabled = validatedEis
         )
+    }
+
+    /**
+     * Checks whether the active camera hardware supports Optical Image Stabilization (OIS).
+     *
+     * @return True if LENS_OPTICAL_STABILIZATION_MODE_ON is advertised by CameraCharacteristics.
+     */
+    private fun isOisSupported(): Boolean {
+        val modes = characteristics?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+        return modes?.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
+    }
+
+    /**
+     * Checks whether the active camera hardware supports Electronic Image Stabilization (EIS).
+     *
+     * @return True if CONTROL_VIDEO_STABILIZATION_MODE_ON is advertised by CameraCharacteristics.
+     */
+    private fun isEisSupported(): Boolean {
+        val modes = characteristics?.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+        return modes?.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON) == true
     }
 
     // ---------------------------------------------------------------------------------------------

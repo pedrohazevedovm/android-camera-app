@@ -53,12 +53,15 @@ Triggers an immediate frame capture from the active sensor stream and returns th
     - `sensor_exposure_time` (ns)
     - `sensor_sensitivity` (ISO)
     - `sensor_timestamp` (hardware monotonic ns)
+    - `sensor_rolling_shutter_skew` (ns duration from first row to last row readout)
     - `lens_focus_distance` (diopters)
     - `lens_focal_length` (mm)
     - `lens_intrinsic_calibration` (`[fx, fy, cx, cy, skew]`, when provided by the HAL)
     - `camera_matrix_k` (9 values in ROS row-major order, scaled to the JPEG output)
     - `camera_matrix_width`, `camera_matrix_height`
     - `lens_aperture` (f-number)
+    - `lens_state` (`0` = `STATIONARY`, `1` = `MOVING`)
+    - `lens_intrinsic_calibration` (`[fx, fy, cx, cy, s]` in active-array pixels)
     - `control_ae_mode`, `control_af_mode`, `control_awb_mode`
     - `color_correction_mode`
     - `color_correction_gains` (`{"red", "green_even", "green_odd", "blue"}`)
@@ -113,27 +116,41 @@ available only in `lens_intrinsic_calibration` and is not copied into `K`.
 ---
 
 ### 2. `POST /config`
-Dynamically updates the manual camera parameters on the fly without closing the capture session.
+Dynamically updates the camera parameters on the fly without closing the capture session. Supports switching between strict deterministic `"manual"` mode and standard Android `"auto"` mode (3A + ISP filters), as well as toggling Optical (`ois_enabled`) and Electronic (`eis_enabled`) stabilization for comparative experiments.
 
 - **Method**: `POST`
 - **Path**: `/config`
 - **Content-Type**: `application/json`
 
-#### Request Body:
+#### Request Body (Manual Mode):
 ```json
 {
+  "control_mode": "manual",
   "focus_distance": 2.5,
   "iso": 200,
-  "exposure_time_ns": 10000000
+  "exposure_time_ns": 10000000,
+  "ois_enabled": false,
+  "eis_enabled": false
 }
 ```
-*Note: `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`.*
+*Note: `focus_distance` is in diopters ($0.0$ = infinity, $10.0$ = 10cm). `exposure_time_ns` is in nanoseconds ($10{,}000{,}000 = 10\text{ms} = 1/100\text{s}$). If passing milliseconds, use `"exposure_time": 10.0`. When `"control_mode": "auto"` is sent without explicit `ois_enabled`/`eis_enabled`, both default to `true` (if supported by the device hardware).*
 
 #### cURL:
 ```bash
+# Strict Manual Mode (deterministic IBVS baseline)
 curl -X POST http://<DEVICE_IP>:8080/config \
      -H "Content-Type: application/json" \
-     -d '{"focus_distance": 2.5, "iso": 200, "exposure_time_ns": 10000000}'
+     -d '{"control_mode": "manual", "focus_distance": 2.5, "iso": 200, "exposure_time_ns": 10000000}'
+
+# Default Android Camera Auto Mode (3A + OIS/EIS + ISP post-processing)
+curl -X POST http://<DEVICE_IP>:8080/config \
+     -H "Content-Type: application/json" \
+     -d '{"control_mode": "auto"}'
+
+# Ablative Test: Manual 3A with OIS enabled
+curl -X POST http://<DEVICE_IP>:8080/config \
+     -H "Content-Type: application/json" \
+     -d '{"control_mode": "manual", "ois_enabled": true, "eis_enabled": false}'
 ```
 
 #### Response:
@@ -142,10 +159,14 @@ curl -X POST http://<DEVICE_IP>:8080/config \
   "status": "success",
   "message": "Camera parameters updated",
   "applied_settings": {
+    "control_mode": "manual",
+    "auto_mode": false,
     "focus_distance": 2.5,
     "iso": 200,
     "exposure_time_ns": 10000000,
-    "exposure_time_ms": 10.0
+    "exposure_time_ms": 10.0,
+    "ois_enabled": false,
+    "eis_enabled": false
   }
 }
 ```
@@ -153,13 +174,15 @@ curl -X POST http://<DEVICE_IP>:8080/config \
 ---
 
 ### 3. `GET /status`
+
 Returns live telemetry, hardware information, and session capture statistics.
 
 - **Method**: `GET`
 - **Path**: `/status`
 - **Response**: `200 OK`, `Content-Type: application/json`
 
-#### Response:
+#### Response
+
 ```json
 {
   "status": "online",
@@ -167,10 +190,14 @@ Returns live telemetry, hardware information, and session capture statistics.
   "android_version": "14",
   "captures_served": 184,
   "current_settings": {
+    "control_mode": "manual",
+    "auto_mode": false,
     "focus_distance": 2.5,
     "iso": 200,
     "exposure_time_ns": 10000000,
-    "exposure_time_ms": 10.0
+    "exposure_time_ms": 10.0,
+    "ois_enabled": false,
+    "eis_enabled": false
   }
 }
 ```
